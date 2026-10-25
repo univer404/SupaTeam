@@ -419,7 +419,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
             });
         }
     }
-    @EventHandler public void onQuit(PlayerQuitEvent event) { UUID id=event.getPlayer().getUniqueId(); teleporting.remove(id); teamChat.remove(id); awaitingSearch.remove(id); awaitingInvite.remove(id); searchHandled.remove(id); selectedMembers.remove(id); }
+    @EventHandler public void onQuit(PlayerQuitEvent event) { UUID id=event.getPlayer().getUniqueId(); teleporting.remove(id); teamChat.remove(id); awaitingSearch.remove(id); awaitingInvite.remove(id); handledGuiChat.remove(id); selectedMembers.remove(id); }
     @EventHandler public void onFriendlyFire(EntityDamageByEntityEvent event) {
         if (!(event.getEntity() instanceof Player victim)) return;
         Player attacker = event.getDamager() instanceof Player direct ? direct : event.getDamager() instanceof org.bukkit.entity.Projectile projectile && projectile.getShooter() instanceof Player shooter ? shooter : null;
@@ -428,7 +428,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
         if (victimTeam != null && victimTeam == attackerTeam && !victimTeam.pvp) event.setCancelled(true);
     }
     @EventHandler public void onChat(AsyncPlayerChatEvent event) {
-        Player p=event.getPlayer(); if (searchHandled.remove(p.getUniqueId()) || awaitingSearch.contains(p.getUniqueId()) || awaitingInvite.contains(p.getUniqueId())) return; if (!teamChat.contains(p.getUniqueId())) return;
+        Player p=event.getPlayer(); if (handledGuiChat.remove(p.getUniqueId()) || awaitingSearch.contains(p.getUniqueId()) || awaitingInvite.contains(p.getUniqueId())) return; if (!teamChat.contains(p.getUniqueId())) return;
         Team t=teamOf(p.getUniqueId()); if (t == null) { teamChat.remove(p.getUniqueId()); return; }
         event.setCancelled(true); String message=event.getMessage();
         Bukkit.getScheduler().runTask(this, () -> broadcast(t, "<aqua>[TEAM] " + p.getName() + ": <white>" + message));
