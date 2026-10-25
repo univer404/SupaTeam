@@ -15,6 +15,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
@@ -243,9 +244,16 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
     @EventHandler public void onInventoryClick(InventoryClickEvent event) {
         if (event.getView().title().toString().contains("Team: ")) event.setCancelled(true);
     }
-    @EventHandler public void onQuit(PlayerQuitEvent event) { teleporting.remove(event.getPlayer().getUniqueId()); teamChat.remove(event.getPlayer().getUniqueId()); }
+    @EventHandler public void onQuit(PlayerQuitEvent event) { UUID id=event.getPlayer().getUniqueId(); teleporting.remove(id); teamChat.remove(id); awaitingSearch.remove(id); awaitingInvite.remove(id); searchHandled.remove(id); selectedMembers.remove(id); }
+    @EventHandler public void onFriendlyFire(EntityDamageByEntityEvent event) {
+        if (!(event.getEntity() instanceof Player victim)) return;
+        Player attacker = event.getDamager() instanceof Player direct ? direct : event.getDamager() instanceof org.bukkit.entity.Projectile projectile && projectile.getShooter() instanceof Player shooter ? shooter : null;
+        if (attacker == null) return;
+        Team victimTeam=teamOf(victim.getUniqueId()); Team attackerTeam=teamOf(attacker.getUniqueId());
+        if (victimTeam != null && victimTeam == attackerTeam && !victimTeam.pvp) event.setCancelled(true);
+    }
     @EventHandler public void onChat(AsyncPlayerChatEvent event) {
-        Player p=event.getPlayer(); if (!teamChat.contains(p.getUniqueId())) return;
+        Player p=event.getPlayer(); if (searchHandled.remove(p.getUniqueId()) || awaitingSearch.contains(p.getUniqueId()) || awaitingInvite.contains(p.getUniqueId())) return; if (!teamChat.contains(p.getUniqueId())) return;
         Team t=teamOf(p.getUniqueId()); if (t == null) { teamChat.remove(p.getUniqueId()); return; }
         event.setCancelled(true); String message=event.getMessage();
         Bukkit.getScheduler().runTask(this, () -> broadcast(t, "<aqua>[TEAM] " + p.getName() + ": <white>" + message));
