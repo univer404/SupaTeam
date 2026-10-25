@@ -269,7 +269,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
         return options.stream().filter(s->s.toLowerCase(Locale.ROOT).startsWith(prefix)).toList();
     }
     private final class TeamPlaceholders extends PlaceholderExpansion {
-        @Override public String getIdentifier(){return "skteams";}
+        @Override public String getIdentifier(){return "team";}
         @Override public String getAuthor(){return "univer404";}
         @Override public String getVersion(){return getPluginMeta().getVersion();}
         @Override public boolean persist(){return true;}
