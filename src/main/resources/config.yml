@@ -1,0 +1,17 @@
+# SupaTeam settings
+teams:
+  max-members: 14
+  invite-expiry-seconds: 60
+  home-teleport-delay-seconds: 5
+  blocked-home-worlds:
+    - spawn
+    - afk
+    - arena_rtpportal
+    - arena_badlands
+    - arena_desert
+    - arena_flat
+    - arena_plains
+messages:
+  prefix: "<gray>[<aqua>SupaTeam</aqua>]</gray> "
+  no-team: "<red>You do not have a team.</red>"
+  already-in-team: "<red>You are already in a team.</red>"
