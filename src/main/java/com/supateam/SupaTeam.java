@@ -3,6 +3,7 @@ package com.supateam;
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.OfflinePlayer;
@@ -37,6 +38,13 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
     private final Set<UUID> teamChat = ConcurrentHashMap.newKeySet();
     private final Set<UUID> teleporting = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Long> disbandRequests = new HashMap<>();
+    private final Map<UUID, Integer> guiPages = new HashMap<>();
+    private final Map<UUID, String> guiSearch = new HashMap<>();
+    private final Map<UUID, String> guiSort = new HashMap<>();
+    private final Set<UUID> awaitingSearch = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> awaitingInvite = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> handledGuiChat = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, UUID> selectedMembers = new HashMap<>();
     private File dataFile;
     private YamlConfiguration data;
     private final MiniMessage mm = MiniMessage.miniMessage();
@@ -56,7 +64,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
     }
 
     @Override public void onDisable() { saveTeams(); }
-    private Component text(String s) { return mm.deserialize(s.replace("&", "§")); }
+    private Component text(String s) { return mm.deserialize(s).decoration(TextDecoration.ITALIC, false); }
     private void msg(CommandSender sender, String s) { sender.sendMessage(text(s)); }
     private int maxMembers() { return Math.max(2, getConfig().getInt("teams.max-members", 14)); }
     private Team teamOf(UUID id) { String name = membership.get(id); return name == null ? null : teams.get(key(name)); }
@@ -73,6 +81,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
             for (UUID id : t.mods) mods.add(id.toString());
             data.set(root + ".members", members);
             data.set(root + ".moderators", mods);
+            data.set(root + ".pvp", t.pvp);
             if (t.home != null) {
                 data.set(root + ".home.world", t.home.getWorld().getName());
                 data.set(root + ".home.x", t.home.getX()); data.set(root + ".home.y", t.home.getY()); data.set(root + ".home.z", t.home.getZ());
@@ -93,6 +102,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
                 Team t = new Team(name, UUID.fromString(ownerText));
                 for (String id : data.getStringList("teams." + name + ".members")) try { t.members.add(UUID.fromString(id)); } catch (IllegalArgumentException ignored) {}
                 for (String id : data.getStringList("teams." + name + ".moderators")) try { t.mods.add(UUID.fromString(id)); } catch (IllegalArgumentException ignored) {}
+                t.pvp = data.getBoolean("teams." + name + ".pvp", false);
                 if (!t.members.contains(t.owner)) t.members.add(t.owner);
                 String worldName = data.getString("teams." + name + ".home.world");
                 World world = worldName == null ? null : Bukkit.getWorld(worldName);
@@ -200,6 +210,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
             }
             case "disband" -> {
                 if (team == null || !isOwner(p, team)) return fail(p, "<red>Only a team owner can disband a team.</red>");
+                if (args.length == 1) { openDisbandConfirm(p); return true; }
                 if (args.length < 2 || !args[1].equalsIgnoreCase("confirm")) {
                     disbandRequests.put(p.getUniqueId(), System.currentTimeMillis() + 15000L);
                     msg(p, "<red>This permanently deletes <white>" + team.name + "</white>. Type <yellow>/team disband confirm</yellow> within 15 seconds.</red>"); return true;
@@ -220,29 +231,193 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
         }
     }
 
+    private ItemStack button(Material material, String name, List<String> lore) {
+        ItemStack item = new ItemStack(material);
+        var meta = item.getItemMeta();
+        meta.displayName(text(name));
+        meta.lore(lore.stream().map(this::text).toList());
+        item.setItemMeta(meta);
+        return item;
+    }
+
     private void openTeamInfo(Player viewer, Team team) {
-        Inventory inv = Bukkit.createInventory(null, 54, text("<dark_gray>Team: " + team.name));
-        ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
-        var fm = filler.getItemMeta(); fm.displayName(text("<dark_gray> ")); filler.setItemMeta(fm);
-        for (int i=45;i<54;i++) inv.setItem(i, filler);
-        ItemStack info = new ItemStack(Material.IRON_HELMET); var meta = info.getItemMeta();
-        meta.displayName(text("<aqua>" + team.name));
-        meta.lore(List.of(text("<gray>Owner: <white>" + Optional.ofNullable(Bukkit.getOfflinePlayer(team.owner).getName()).orElse("Unknown")), text("<gray>Members: <white>" + team.members.size() + "/" + maxMembers()), text("<gray>Home: <white>" + (team.home == null ? "Not set" : "Set"))));
-        info.setItemMeta(meta); inv.setItem(49, info);
-        int slot=0;
-        for (UUID id : team.members) {
-            if (slot >= 45) break;
-            ItemStack head = new ItemStack(Material.PLAYER_HEAD); SkullMeta skull=(SkullMeta)head.getItemMeta();
-            OfflinePlayer member=Bukkit.getOfflinePlayer(id); skull.setOwningPlayer(member);
-            String name=Optional.ofNullable(member.getName()).orElse("Unknown");
-            skull.displayName(text((id.equals(team.owner) ? "<gold>★ " : team.mods.contains(id) ? "<aqua>◆ " : "<white>") + name));
-            skull.lore(List.of(text(id.equals(team.owner) ? "<gold>Team Owner" : team.mods.contains(id) ? "<aqua>Moderator" : "<gray>Member")));
-            head.setItemMeta(skull); inv.setItem(slot++, head);
+        UUID viewerId = viewer.getUniqueId();
+        int page = Math.max(0, guiPages.getOrDefault(viewerId, 0));
+        String search = guiSearch.getOrDefault(viewerId, "");
+        String sort = guiSort.getOrDefault(viewerId, "role");
+        Inventory inv = Bukkit.createInventory(null, 54, text("ᴛᴇᴀᴍ | " + team.name + " | " + (page + 1)));
+        ItemStack filler = button(Material.GRAY_STAINED_GLASS_PANE, " ", List.of());
+        for (int i = 45; i < 54; i++) inv.setItem(i, filler);
+
+        ItemStack info = button(Material.NETHER_STAR, "ᴛᴇᴀᴍ ɪɴꜰᴏ", List.of(
+                "<gray>Name: <white>" + team.name,
+                "<gray>Owner: <white>" + Optional.ofNullable(Bukkit.getOfflinePlayer(team.owner).getName()).orElse("Unknown"),
+                "<gray>Members: <white>" + team.members.size() + "/" + maxMembers(),
+                "<gray>Home: <white>" + (team.home == null ? "Not set" : "Set"),
+                "<gray>Team PvP: " + (team.pvp ? "<green>Enabled" : "<red>Disabled")
+        ));
+        inv.setItem(49, info);
+        inv.setItem(45, button(Material.ARROW, "ᴘʀᴇᴠɪᴏᴜꜱ ᴘᴀɢᴇ", List.of("<gray>Previous member page")));
+        inv.setItem(46, button(Material.COMPASS, "ꜱᴇᴀʀᴄʜ ᴍᴇᴍʙᴇʀꜱ", List.of("<gray>Filter: " + (search.isEmpty() ? "None" : search), "<yellow>Click and type in chat", "<gray>Type clear to reset")));
+        inv.setItem(47, button(Material.HOPPER, "ꜱᴏʀᴛ: " + sort.toUpperCase(Locale.ROOT), List.of("<gray>Click to cycle Role / Name / Online")));
+        inv.setItem(48, button(Material.CLOCK, "ʀᴇꜰʀᴇꜱʜ", List.of("<gray>Refresh this menu")));
+        inv.setItem(50, button(Material.IRON_SWORD, "ᴛᴇᴀᴍ ᴘᴠᴘ", List.of("<gray>Status: " + (team.pvp ? "Enabled" : "Disabled"), "<yellow>Owner can toggle this setting")));
+        inv.setItem(51, button(Material.PLAYER_HEAD, "ɪɴᴠɪᴛᴇ ᴘʟᴀʏᴇʀ", List.of("<gray>Click and type an online player name")));
+        inv.setItem(52, button(Material.BARRIER, "ᴅɪꜱʙᴀɴᴅ ᴛᴇᴀᴍ", List.of("<red>Owner only", "<gray>Open confirmation menu")));
+        inv.setItem(53, button(Material.ARROW, "ɴᴇxᴛ ᴘᴀɢᴇ", List.of("<gray>Next member page")));
+
+        List<UUID> members = team.members.stream().filter(id -> {
+            String name = Optional.ofNullable(Bukkit.getOfflinePlayer(id).getName()).orElse("Unknown");
+            return name.toLowerCase(Locale.ROOT).contains(search.toLowerCase(Locale.ROOT));
+        }).sorted((a, b) -> {
+            String na = Optional.ofNullable(Bukkit.getOfflinePlayer(a).getName()).orElse("Unknown");
+            String nb = Optional.ofNullable(Bukkit.getOfflinePlayer(b).getName()).orElse("Unknown");
+            if (sort.equals("name")) return na.compareToIgnoreCase(nb);
+            if (sort.equals("online")) return Boolean.compare(Bukkit.getPlayer(b) != null, Bukkit.getPlayer(a) != null);
+            int ra = a.equals(team.owner) ? 0 : team.mods.contains(a) ? 1 : 2;
+            int rb = b.equals(team.owner) ? 0 : team.mods.contains(b) ? 1 : 2;
+            int role = Integer.compare(ra, rb);
+            return role != 0 ? role : na.compareToIgnoreCase(nb);
+        }).toList();
+        int maxPage = Math.max(0, (members.size() - 1) / 45);
+        page = Math.min(page, maxPage);
+        guiPages.put(viewerId, page);
+        int slot = 0;
+        for (UUID id : members.stream().skip((long) page * 45).limit(45).toList()) {
+            ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+            SkullMeta skull = (SkullMeta) head.getItemMeta();
+            OfflinePlayer member = Bukkit.getOfflinePlayer(id);
+            skull.setOwningPlayer(member);
+            String name = Optional.ofNullable(member.getName()).orElse("Unknown");
+            String role = id.equals(team.owner) ? "<gold>★ " : team.mods.contains(id) ? "<aqua>◆ " : "<white>";
+            skull.displayName(text(role + name));
+            skull.lore(List.of(
+                    text(id.equals(team.owner) ? "<gold>ᴛᴇᴀᴍ ᴏᴡɴᴇʀ" : team.mods.contains(id) ? "<aqua>ᴍᴏᴅᴇʀᴀᴛᴏʀ" : "<gray>ᴍᴇᴍʙᴇʀ"),
+                    text(Bukkit.getPlayer(id) == null ? "<red>Offline" : "<green>Online"),
+                    text("<yellow>Click to edit member")
+            ));
+            head.setItemMeta(skull);
+            inv.setItem(slot++, head);
         }
         viewer.openInventory(inv);
     }
+
+    private void openMemberEdit(Player viewer, Team team, UUID targetId) {
+        selectedMembers.put(viewer.getUniqueId(), targetId);
+        Inventory inv = Bukkit.createInventory(null, 27, text("ᴇᴅɪᴛ ᴍᴇᴍʙᴇʀ"));
+        ItemStack filler = button(Material.GRAY_STAINED_GLASS_PANE, " ", List.of());
+        for (int i = 0; i < 27; i++) inv.setItem(i, filler);
+        OfflinePlayer target = Bukkit.getOfflinePlayer(targetId);
+        inv.setItem(4, button(Material.PLAYER_HEAD, Optional.ofNullable(target.getName()).orElse("Unknown"), List.of("<gray>Selected team member")));
+        if (!targetId.equals(team.owner)) {
+            inv.setItem(11, button(team.mods.contains(targetId) ? Material.IRON_INGOT : Material.GOLD_INGOT,
+                    team.mods.contains(targetId) ? "ʀᴇᴍᴏᴠᴇ ᴍᴏᴅᴇʀᴀᴛᴏʀ" : "ᴘʀᴏᴍᴏᴛᴇ ᴛᴏ ᴍᴏᴅ",
+                    List.of("<gray>Only the owner can change moderator roles")));
+            inv.setItem(15, button(Material.BARRIER, "ᴋɪᴄᴋ ᴍᴇᴍʙᴇʀ", List.of("<red>Remove this member from the team")));
+        }
+        inv.setItem(22, button(Material.ARROW, "ʙᴀᴄᴋ ᴛᴏ ᴛᴇᴀᴍ", List.of("<gray>Return to member list")));
+        viewer.openInventory(inv);
+    }
+
+    private void openDisbandConfirm(Player viewer) {
+        Inventory inv = Bukkit.createInventory(null, 27, text("ᴄᴏɴꜰɪʀᴍ ᴅɪꜱʙᴀɴᴅɪɴɢ ᴛᴇᴀᴍ"));
+        ItemStack filler = button(Material.GRAY_STAINED_GLASS_PANE, " ", List.of());
+        for (int i = 0; i < 27; i++) inv.setItem(i, filler);
+        inv.setItem(11, button(Material.LIME_CONCRETE, "ᴄᴏɴꜰɪʀᴍ", List.of("<red>Permanently delete this team")));
+        inv.setItem(15, button(Material.RED_CONCRETE, "ᴄᴀɴᴄᴇʟ", List.of("<gray>Keep the team")));
+        viewer.openInventory(inv);
+    }
+
     @EventHandler public void onInventoryClick(InventoryClickEvent event) {
-        if (event.getView().title().toString().contains("Team: ")) event.setCancelled(true);
+        String title = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(event.getView().title());
+        if (!title.startsWith("ᴛᴇᴀᴍ | ") && !title.equals("ᴇᴅɪᴛ ᴍᴇᴍʙᴇʀ") && !title.equals("ᴄᴏɴꜰɪʀᴍ ᴅɪꜱʙᴀɴᴅɪɴɢ ᴛᴇᴀᴍ")) return;
+        event.setCancelled(true);
+        if (!(event.getWhoClicked() instanceof Player p) || event.getClickedInventory() == null || event.getClickedInventory() != event.getView().getTopInventory()) return;
+        Team team = teamOf(p.getUniqueId());
+        int slot = event.getRawSlot();
+        if (title.startsWith("ᴛᴇᴀᴍ | ")) {
+            if (team == null) { p.closeInventory(); return; }
+            if (slot == 45) guiPages.put(p.getUniqueId(), Math.max(0, guiPages.getOrDefault(p.getUniqueId(), 0) - 1));
+            else if (slot == 53) guiPages.put(p.getUniqueId(), guiPages.getOrDefault(p.getUniqueId(), 0) + 1);
+            else if (slot == 46) { awaitingSearch.add(p.getUniqueId()); p.closeInventory(); msg(p, "<yellow>Type a member name filter in chat, or type clear to reset it.</yellow>"); return; }
+            else if (slot == 47) { String sort = guiSort.getOrDefault(p.getUniqueId(), "role"); guiSort.put(p.getUniqueId(), sort.equals("role") ? "name" : sort.equals("name") ? "online" : "role"); }
+            else if (slot == 50) { if (isOwner(p, team)) { team.pvp = !team.pvp; saveTeams(); } else msg(p, "<red>Only the owner can toggle team PvP.</red>"); }
+            else if (slot == 51) { if (isOwner(p, team) || team.mods.contains(p.getUniqueId())) { awaitingInvite.add(p.getUniqueId()); p.closeInventory(); msg(p, "<yellow>Type the online player's name in chat to invite them.</yellow>"); return; } else msg(p, "<red>Only the owner or a moderator can invite players.</red>"); }
+            else if (slot == 52) { if (isOwner(p, team)) { openDisbandConfirm(p); return; } else msg(p, "<red>Only the owner can disband the team.</red>"); }
+            else if (slot >= 0 && slot < 45 && (isOwner(p, team) || team.mods.contains(p.getUniqueId()))) {
+                ItemStack clicked = event.getCurrentItem();
+                if (clicked != null && clicked.getType() == Material.PLAYER_HEAD) {
+                    String plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(clicked.getItemMeta().displayName());
+                    if (plain.startsWith("★ ") || plain.startsWith("◆ ")) plain = plain.substring(2);
+                    for (UUID id : team.members) {
+                        String name = Optional.ofNullable(Bukkit.getOfflinePlayer(id).getName()).orElse("Unknown");
+                        if (name.equals(plain)) { openMemberEdit(p, team, id); return; }
+                    }
+                }
+            }
+            openTeamInfo(p, team);
+            return;
+        }
+        if (title.equals("ᴇᴅɪᴛ ᴍᴇᴍʙᴇʀ")) {
+            if (team == null) { p.closeInventory(); return; }
+            UUID target = selectedMembers.get(p.getUniqueId());
+            if (target == null || !team.members.contains(target)) { openTeamInfo(p, team); return; }
+            if (slot == 22) { openTeamInfo(p, team); return; }
+            if (slot == 11 && isOwner(p, team) && !target.equals(team.owner)) {
+                if (!team.mods.add(target)) team.mods.remove(target);
+                saveTeams(); openMemberEdit(p, team, target); return;
+            }
+            if (slot == 15 && !target.equals(team.owner) && (isOwner(p, team) || (!team.mods.contains(target) && team.mods.contains(p.getUniqueId())))) {
+                team.members.remove(target); team.mods.remove(target); membership.remove(target); teamChat.remove(target); saveTeams();
+                Player online = Bukkit.getPlayer(target); if (online != null) msg(online, "<red>You were kicked from the team.</red>");
+                selectedMembers.remove(p.getUniqueId()); openTeamInfo(p, team); return;
+            }
+            return;
+        }
+        if (title.equals("ᴄᴏɴꜰɪʀᴍ ᴅɪꜱʙᴀɴᴅɪɴɢ ᴛᴇᴀᴍ")) {
+            if (team == null || !isOwner(p, team)) { p.closeInventory(); return; }
+            if (slot == 11) {
+                for (UUID id : team.members) { membership.remove(id); teamChat.remove(id); Player online = Bukkit.getPlayer(id); if (online != null) msg(online, "<red>Your team was disbanded.</red>"); }
+                teams.remove(key(team.name)); saveTeams(); p.closeInventory(); return;
+            }
+            if (slot == 15) p.closeInventory();
+        }
+    }
+
+    @EventHandler public void onGuiChat(AsyncPlayerChatEvent event) {
+        Player p = event.getPlayer();
+        if (awaitingSearch.remove(p.getUniqueId())) {
+            handledGuiChat.add(p.getUniqueId());
+            event.setCancelled(true);
+            String filter = event.getMessage().trim();
+            Bukkit.getScheduler().runTask(this, () -> {
+                guiSearch.put(p.getUniqueId(), filter.equalsIgnoreCase("clear") ? "" : filter);
+                Team team = teamOf(p.getUniqueId());
+                if (team != null) openTeamInfo(p, team);
+            });
+            return;
+        }
+        if (awaitingInvite.remove(p.getUniqueId())) {
+            handledGuiChat.add(p.getUniqueId());
+            event.setCancelled(true);
+            String targetName = event.getMessage().trim();
+            Bukkit.getScheduler().runTask(this, () -> {
+                Team team = teamOf(p.getUniqueId());
+                Player target = Bukkit.getPlayerExact(targetName);
+                if (team == null) { msg(p, "<red>You are no longer in a team.</red>"); return; }
+                if (target == null || target.equals(p) || teamOf(target.getUniqueId()) != null || team.members.size() >= maxMembers()) {
+                    msg(p, "<red>Cannot invite that player. Check the name, membership, and team capacity.</red>");
+                    openTeamInfo(p, team);
+                    return;
+                }
+                invites.put(target.getUniqueId(), key(team.name));
+                msg(p, "<green>Invite sent to <aqua>" + target.getName() + "</aqua>.</green>");
+                msg(target, "<aqua>" + p.getName() + "</aqua> <gray>invited you to <aqua>" + team.name + "</aqua>. Use /team join " + team.name + ".");
+                long expiry = Math.max(1, getConfig().getLong("teams.invite-expiry-seconds", 60));
+                Bukkit.getScheduler().runTaskLater(this, () -> { if (key(team.name).equals(invites.get(target.getUniqueId()))) invites.remove(target.getUniqueId()); }, expiry * 20L);
+                openTeamInfo(p, team);
+            });
+        }
     }
     @EventHandler public void onQuit(PlayerQuitEvent event) { UUID id=event.getPlayer().getUniqueId(); teleporting.remove(id); teamChat.remove(id); awaitingSearch.remove(id); awaitingInvite.remove(id); searchHandled.remove(id); selectedMembers.remove(id); }
     @EventHandler public void onFriendlyFire(EntityDamageByEntityEvent event) {
@@ -288,7 +463,7 @@ public final class SupaTeam extends JavaPlugin implements Listener, TabExecutor 
         }
     }
     private static final class Team {
-        final String name; final UUID owner; final Set<UUID> members=new LinkedHashSet<>(); final Set<UUID> mods=new HashSet<>(); Location home;
+        final String name; final UUID owner; final Set<UUID> members=new LinkedHashSet<>(); final Set<UUID> mods=new HashSet<>(); Location home; boolean pvp=false;
         Team(String name,UUID owner){this.name=name;this.owner=owner;}
     }
 }
