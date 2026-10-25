@@ -1,0 +1,19 @@
+name: SupaTeam
+version: 1.0.0
+main: com.supateam.SupaTeam
+api-version: '1.21'
+softdepend: [PlaceholderAPI]
+author: univer404
+description: Simple configurable player teams with homes, invites, team chat and a member GUI.
+commands:
+  team:
+    description: Manage your team.
+    usage: /team
+    aliases: [teams]
+permissions:
+  supateam.use:
+    description: Use team commands.
+    default: true
+  supateam.admin:
+    description: Manage all teams.
+    default: op
