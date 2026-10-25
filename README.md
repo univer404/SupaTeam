@@ -22,9 +22,9 @@ The command alias `/teams` is supported. Settings are in `plugins/SupaTeam/confi
 
 ## Placeholders
 When PlaceholderAPI is installed:
-- `%skteams_name%`
-- `%skteams_inteam%`
-- `%skteams_members%`
+- `%team_name%`
+- `%team_inteam%`
+- `%team_members%`
 
 ## Build
 Use Java 21 and Maven: `mvn clean package`. GitHub Actions automatically builds the JAR and uploads it as the **SupaTeam** artifact on each push.
